@@ -6,10 +6,11 @@ from collections import OrderedDict
 from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI
 
+# ================= LOAD ENV =================
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI(title="AI Intelligent Cache System")
 
@@ -20,9 +21,9 @@ TTL_SECONDS = 86400  # 24 hours
 CACHE_LIMIT = 1500
 SIM_THRESHOLD = 0.95
 
-# ================= CACHE =================
-exact_cache = OrderedDict()   # key -> data
-semantic_cache = []           # list of dicts with embeddings
+# ================= CACHE STORAGE =================
+exact_cache = OrderedDict()
+semantic_cache = []
 
 # ================= ANALYTICS =================
 total_requests = 0
@@ -36,7 +37,7 @@ class QueryRequest(BaseModel):
     query: str
     application: str = "document_summarizer"
 
-# ================= UTIL FUNCTIONS =================
+# ================= UTILS =================
 def normalize(text: str):
     return text.lower().strip()
 
@@ -50,11 +51,8 @@ def remove_expired():
     now = time.time()
 
     # exact cache TTL
-    keys_to_delete = []
-    for k, v in exact_cache.items():
-        if now - v["time"] > TTL_SECONDS:
-            keys_to_delete.append(k)
-    for k in keys_to_delete:
+    keys = [k for k,v in exact_cache.items() if now - v["time"] > TTL_SECONDS]
+    for k in keys:
         del exact_cache[k]
 
     # semantic TTL
@@ -64,28 +62,33 @@ def enforce_lru():
     while len(exact_cache) > CACHE_LIMIT:
         exact_cache.popitem(last=False)
 
-# ================= OPENAI CALL =================
+# ================= LLM CALL =================
 async def call_llm(query):
     global total_tokens_used
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": f"Summarize this document:\n{query}"}],
         temperature=0.3
     )
 
-    text = response["choices"][0]["message"]["content"]
-    tokens = response["usage"]["total_tokens"]
+    text = response.choices[0].message.content
+
+    # SAFE TOKEN HANDLING (fixes 500 error)
+    tokens = AVG_TOKENS
+    if hasattr(response, "usage") and response.usage and response.usage.total_tokens:
+        tokens = response.usage.total_tokens
 
     total_tokens_used += tokens
     return text, tokens
 
+# ================= EMBEDDING =================
 async def get_embedding(text):
-    emb = openai.Embedding.create(
+    emb = client.embeddings.create(
         model="text-embedding-3-small",
         input=text
     )
-    return np.array(emb["data"][0]["embedding"])
+    return np.array(emb.data[0].embedding)
 
 # ================= MAIN ENDPOINT =================
 @app.post("/")
@@ -104,14 +107,12 @@ async def main_query(req: QueryRequest):
     if key in exact_cache:
         cache_hits += 1
         cached_tokens_saved += AVG_TOKENS
-
         exact_cache.move_to_end(key)
 
-        latency = int((time.time() - start) * 1000)
         return {
             "answer": exact_cache[key]["response"],
             "cached": True,
-            "latency": latency,
+            "latency": int((time.time()-start)*1000),
             "cacheKey": key
         }
 
@@ -124,61 +125,56 @@ async def main_query(req: QueryRequest):
             cache_hits += 1
             cached_tokens_saved += AVG_TOKENS
 
-            latency = int((time.time() - start) * 1000)
             return {
                 "answer": item["response"],
                 "cached": True,
-                "latency": latency,
+                "latency": int((time.time()-start)*1000),
                 "cacheKey": "semantic_match"
             }
 
     # ========= CACHE MISS =========
     cache_misses += 1
-
     answer, tokens = await call_llm(query_norm)
 
-    # store exact
+    # store exact cache
     exact_cache[key] = {
         "response": answer,
         "time": time.time()
     }
-
     enforce_lru()
 
-    # store semantic
+    # store semantic cache
     semantic_cache.append({
         "embedding": query_embedding,
         "response": answer,
         "time": time.time()
     })
 
-    latency = int((time.time() - start) * 1000)
-
     return {
         "answer": answer,
         "cached": False,
-        "latency": latency,
+        "latency": int((time.time()-start)*1000),
         "cacheKey": key
     }
 
 # ================= ANALYTICS =================
 @app.get("/analytics")
 def analytics():
-    hit_rate = cache_hits / total_requests if total_requests else 0
+    hit_rate = cache_hits/total_requests if total_requests else 0
 
-    baseline_cost = (total_requests * AVG_TOKENS / 1_000_000) * MODEL_COST_PER_1M
-    actual_cost = ((total_tokens_used - cached_tokens_saved) / 1_000_000) * MODEL_COST_PER_1M
-    savings = baseline_cost - actual_cost
+    baseline_cost = (total_requests*AVG_TOKENS/1_000_000)*MODEL_COST_PER_1M
+    actual_cost = ((total_tokens_used-cached_tokens_saved)/1_000_000)*MODEL_COST_PER_1M
+    savings = baseline_cost-actual_cost
 
     return {
-        "hitRate": round(hit_rate, 2),
+        "hitRate": round(hit_rate,2),
         "totalRequests": total_requests,
         "cacheHits": cache_hits,
         "cacheMisses": cache_misses,
         "cacheSize": len(exact_cache),
-        "costSavings": round(savings, 2),
-        "savingsPercent": round(hit_rate * 100, 1),
-        "strategies": [
+        "costSavings": round(savings,2),
+        "savingsPercent": round(hit_rate*100,1),
+        "strategies":[
             "exact match",
             "semantic similarity",
             "LRU eviction",
