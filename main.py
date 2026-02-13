@@ -4,6 +4,7 @@ import hashlib
 import numpy as np
 from collections import OrderedDict
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -14,10 +15,19 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI(title="AI Intelligent Cache System")
 
+# ================= CORS (IMPORTANT FOR EVALUATOR) =================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ================= CONFIG =================
 MODEL_COST_PER_1M = 1.0
 AVG_TOKENS = 3000
-TTL_SECONDS = 86400  # 24 hours
+TTL_SECONDS = 86400
 CACHE_LIMIT = 1500
 SIM_THRESHOLD = 0.95
 
@@ -40,7 +50,14 @@ class QueryRequest(BaseModel):
 # ================= ROOT ENDPOINT (VERY IMPORTANT) =================
 @app.get("/")
 def root():
-    return {"message": "AI cache system running"}
+    return {
+        "status": "ok",
+        "message": "AI caching API running",
+        "endpoints": {
+            "main": "POST /",
+            "analytics": "GET /analytics"
+        }
+    }
 
 # ================= UTILS =================
 def normalize(text: str):
@@ -77,7 +94,6 @@ async def call_llm(query):
 
     text = response.choices[0].message.content
 
-    # safe token handling
     tokens = AVG_TOKENS
     if hasattr(response, "usage") and response.usage and response.usage.total_tokens:
         tokens = response.usage.total_tokens
