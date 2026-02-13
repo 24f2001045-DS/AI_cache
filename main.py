@@ -15,7 +15,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI(title="AI Intelligent Cache System")
 
-# ================= CORS (IMPORTANT FOR EVALUATOR) =================
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,7 +31,7 @@ TTL_SECONDS = 86400
 CACHE_LIMIT = 1500
 SIM_THRESHOLD = 0.95
 
-# ================= CACHE STORAGE =================
+# ================= CACHE =================
 exact_cache = OrderedDict()
 semantic_cache = []
 
@@ -47,7 +47,7 @@ class QueryRequest(BaseModel):
     query: str
     application: str = "document_summarizer"
 
-# ================= ROOT ENDPOINT (VERY IMPORTANT) =================
+# ================= ROOT ENDPOINT =================
 @app.get("/")
 def root():
     return {
@@ -128,10 +128,12 @@ async def main_query(req: QueryRequest):
         cached_tokens_saved += AVG_TOKENS
         exact_cache.move_to_end(key)
 
+        latency_ms = max(1, int((time.time()-start)*1000))
+
         return {
             "answer": exact_cache[key]["response"],
             "cached": True,
-            "latency": int((time.time()-start)*1000),
+            "latency": latency_ms,
             "cacheKey": key
         }
 
@@ -144,10 +146,12 @@ async def main_query(req: QueryRequest):
             cache_hits += 1
             cached_tokens_saved += AVG_TOKENS
 
+            latency_ms = max(1, int((time.time()-start)*1000))
+
             return {
                 "answer": item["response"],
                 "cached": True,
-                "latency": int((time.time()-start)*1000),
+                "latency": latency_ms,
                 "cacheKey": "semantic_match"
             }
 
@@ -167,10 +171,12 @@ async def main_query(req: QueryRequest):
         "time": time.time()
     })
 
+    latency_ms = max(1, int((time.time()-start)*1000))
+
     return {
         "answer": answer,
         "cached": False,
-        "latency": int((time.time()-start)*1000),
+        "latency": latency_ms,
         "cacheKey": key
     }
 
