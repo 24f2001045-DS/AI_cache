@@ -37,6 +37,11 @@ class QueryRequest(BaseModel):
     query: str
     application: str = "document_summarizer"
 
+# ================= ROOT ENDPOINT (VERY IMPORTANT) =================
+@app.get("/")
+def root():
+    return {"message": "AI cache system running"}
+
 # ================= UTILS =================
 def normalize(text: str):
     return text.lower().strip()
@@ -50,12 +55,10 @@ def cosine_similarity(a, b):
 def remove_expired():
     now = time.time()
 
-    # exact cache TTL
     keys = [k for k,v in exact_cache.items() if now - v["time"] > TTL_SECONDS]
     for k in keys:
         del exact_cache[k]
 
-    # semantic TTL
     semantic_cache[:] = [x for x in semantic_cache if now - x["time"] < TTL_SECONDS]
 
 def enforce_lru():
@@ -74,7 +77,7 @@ async def call_llm(query):
 
     text = response.choices[0].message.content
 
-    # SAFE TOKEN HANDLING (fixes 500 error)
+    # safe token handling
     tokens = AVG_TOKENS
     if hasattr(response, "usage") and response.usage and response.usage.total_tokens:
         tokens = response.usage.total_tokens
@@ -103,7 +106,7 @@ async def main_query(req: QueryRequest):
 
     remove_expired()
 
-    # ========= EXACT CACHE =========
+    # EXACT CACHE
     if key in exact_cache:
         cache_hits += 1
         cached_tokens_saved += AVG_TOKENS
@@ -116,7 +119,7 @@ async def main_query(req: QueryRequest):
             "cacheKey": key
         }
 
-    # ========= SEMANTIC CACHE =========
+    # SEMANTIC CACHE
     query_embedding = await get_embedding(query_norm)
 
     for item in semantic_cache:
@@ -132,18 +135,16 @@ async def main_query(req: QueryRequest):
                 "cacheKey": "semantic_match"
             }
 
-    # ========= CACHE MISS =========
+    # CACHE MISS
     cache_misses += 1
     answer, tokens = await call_llm(query_norm)
 
-    # store exact cache
     exact_cache[key] = {
         "response": answer,
         "time": time.time()
     }
     enforce_lru()
 
-    # store semantic cache
     semantic_cache.append({
         "embedding": query_embedding,
         "response": answer,
