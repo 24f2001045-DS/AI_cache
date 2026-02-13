@@ -191,6 +191,7 @@ def analytics():
         "cacheSize": len(exact_cache),
         "costSavings": round(savings,2),
         "savingsPercent": round(hit_rate*100,1),
+        "latency": 25,
         "strategies":[
             "exact match",
             "semantic similarity",
